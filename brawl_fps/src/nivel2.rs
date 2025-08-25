@@ -23,7 +23,7 @@ static mut MAP: [[i32; MAP_W]; MAP_H] = [
     [1,0,1,0,1,1,0,1,1,1,0,1,0,0,0,1],
     [1,0,0,0,1,0,0,0,0,1,0,0,0,1,0,1],
     [1,1,1,0,1,0,1,1,0,1,1,1,0,1,0,1],
-    [1,0,0,0,0,0,1,0,0,0,0,1,0,0,0,1],
+    [1,0,0,0,0,0,1,4,0,0,0,1,0,0,0,1],
     [1,0,1,1,1,0,1,1,1,1,0,1,1,1,0,1],
     [1,0,0,0,1,0,0,0,0,0,0,0,0,1,0,1],
     [1,0,1,0,1,1,1,1,1,1,1,1,0,0,0,1],
@@ -73,7 +73,7 @@ fn make_placeholder_texture(r: u8, g: u8, b: u8) -> Texture2D {
     Texture2D::from_rgba8(2, 2, &bytes)
 }
 
-pub async fn run_level1() {
+pub async fn run_level2() {
     // ---- Texturas ----
     let planicie = match load_texture("img/planicie.png").await {
         Ok(t) => t,
@@ -111,6 +111,15 @@ pub async fn run_level1() {
         }
     };
 
+    let gato = match load_texture("img/gato.png").await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Warning: no se pudo cargar img/gato.png: {}. Usando placeholder.", e);
+            make_placeholder_texture(150, 100, 250)
+        }
+    };
+
+    gato.set_filter(FilterMode::Linear);
     planicie.set_filter(FilterMode::Linear);
     bosque.set_filter(FilterMode::Linear);
     castillo.set_filter(FilterMode::Linear);
@@ -133,6 +142,15 @@ pub async fn run_level1() {
             None
         }
     };
+
+    let coin1_sound_opt: Option<Sound> = match load_sound("img/moneda1.wav").await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Warning: no se pudo cargar img/moneda1.wav: {}. Sonido de moneda deshabilitado.", e);
+            None
+        }
+    };
+
     let final_sound_opt: Option<Sound> = match load_sound("img/final.wav").await {
         Ok(s) => Some(s),
         Err(e) => {
@@ -166,31 +184,6 @@ pub async fn run_level1() {
     let mut coins = count_coins();
     let mut won = false;
     let mut paused = false;
-
-    // --- FLAG compartido para orden desde terminal ---
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    let return_to_menu_flag = Arc::new(AtomicBool::new(false));
-    {
-        // clonamos el flag para el hilo que lee stdin
-        let flag_clone = return_to_menu_flag.clone();
-        std::thread::spawn(move || {
-            // hilo bloqueante que espera líneas de stdin
-            let stdin = std::io::stdin();
-            loop {
-                let mut buf = String::new();
-                if stdin.read_line(&mut buf).is_ok() {
-                    let cmd = buf.trim().to_lowercase();
-                    if cmd == "menu" || cmd == "m" || cmd == "return" {
-                        flag_clone.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                } else {
-                    // si stdin falla, terminamos el hilo
-                    break;
-                }
-            }
-        });
-    }
 
     loop {
         let dt = get_frame_time();
@@ -269,14 +262,6 @@ pub async fn run_level1() {
             }
         }
 
-        // Permitir que la terminal pida volver al menú (si se escribió "menu" / "m" / "return")
-        if return_to_menu_flag.load(Ordering::Relaxed) {
-            // aseguramos cursor visible antes de salir
-            set_cursor_grab(false);
-            show_mouse(true);
-            break; // salimos del nivel y volvemos al menú principal
-        }
-
         // Recolección de monedas y condición de salida
         unsafe {
             let cx = cam.pos.x as usize;
@@ -292,6 +277,18 @@ pub async fn run_level1() {
                         play_sound(coin_ref, PlaySoundParams { looped: false, volume: 0.95 });
                     }
                 }
+
+                if MAP[cy][cx] == 4 {
+                    // Recolectada
+                    MAP[cy][cx] = 0;
+                    coins -= 1;
+
+                    // Reproducir sonido de moneda sin detener el fondo (si está disponible)
+                    if let Some(coin1_ref) = coin1_sound_opt.as_ref() {
+                        play_sound(coin1_ref, PlaySoundParams { looped: false, volume: 0.95 });
+                    }
+                }
+
                 if MAP[cy][cx] == 3 && coins == 0 {
                     // Jugador gana: paramos sonido de fondo inmediatamente y reproducimos final (una sola vez)
                     if !final_played {
@@ -331,7 +328,7 @@ pub async fn run_level1() {
         );
 
         // Sprites 3D: monedas (burro) y salida (fiona)
-        draw_sprites_3d(&cam, &z_buffer, &burro, &fiona, coins);
+        draw_sprites_3d(&cam, &z_buffer, &burro, &gato, &fiona, coins);
 
         // Minimap y HUD (ahora draw_minimap recibe coins para mostrar estado dinámico)
         draw_minimap(&cam, coins);
@@ -349,45 +346,8 @@ pub async fn run_level1() {
             let tw = measure_text(msg, None, 60, 1.0);
             draw_text(msg, sw/2.0 - tw.width/2.0, sh/2.0, 60.0, GOLD);
 
-            // ---- BOTÓN: Volver al menú ----
-            let btn_w = 220.0;
-            let btn_h = 48.0;
-            let btn_x = sw / 2.0 - btn_w / 2.0;
-            let btn_y = sh / 2.0 + 40.0;
-
-            let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
-
-            let (mx, my) = mouse_position();
-            if btn_rect.contains(vec2(mx, my)) {
-                draw_rectangle(btn_x - 4.0, btn_y - 4.0, btn_w + 8.0, btn_h + 8.0, GRAY);
-            } else {
-                draw_rectangle(btn_x - 2.0, btn_y - 2.0, btn_w + 4.0, btn_h + 4.0, DARKGRAY);
-            }
-
-            draw_rectangle(btn_x, btn_y, btn_w, btn_h, DARKBLUE);
-            let label = "Volver al menú";
-            let lt = measure_text(label, None, 28, 1.0);
-            draw_text(label, btn_x + btn_w / 2.0 - lt.width / 2.0, btn_y + btn_h / 2.0 + 10.0, 28.0, WHITE);
-
-            if is_mouse_button_pressed(MouseButton::Left) {
-                if btn_rect.contains(vec2(mx, my)) {
-                    set_cursor_grab(false);
-                    show_mouse(true);
-                    break;
-                }
-            }
-        }
-
-        if paused && !won {
-            let sw = screen_width();
-            let sh = screen_height();
-            draw_rectangle(0.0, 0.0, sw, sh, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.5 });
-            let msg = "Pausado — presiona ESC para continuar";
-            let tw = measure_text(msg, None, 32, 1.0);
-            draw_text(msg, sw/2.0 - tw.width/2.0, sh/2.0, 32.0, WHITE);
-
-            // ---- BOTÓN: Volver al menú ----
-            // posición y tamaño del botón (centrado debajo del texto)
+            // ---- BOTÓN: Volver al menú cuando has ganado ----
+            // posición y tamaño del botón (centrado debajo del mensaje)
             let btn_w = 220.0;
             let btn_h = 48.0;
             let btn_x = sw / 2.0 - btn_w / 2.0;
@@ -408,13 +368,52 @@ pub async fn run_level1() {
             let lt = measure_text(label, None, 28, 1.0);
             draw_text(label, btn_x + btn_w / 2.0 - lt.width / 2.0, btn_y + btn_h / 2.0 + 10.0, 28.0, WHITE);
 
-            // detectar click en el botón
+            // detectar click en el botón y salir del nivel
             if is_mouse_button_pressed(MouseButton::Left) {
                 if btn_rect.contains(vec2(mx, my)) {
-                    // asegurar cursor visible antes de salir
+                    // asegurar cursor visible antes de salir (ya lo mostramos, por seguridad)
                     set_cursor_grab(false);
                     show_mouse(true);
                     // salir del nivel: main.rs recibirá el control y volverá al menú principal
+                    break;
+                }
+            }
+        }
+
+        if paused && !won {
+            let sw = screen_width();
+            let sh = screen_height();
+            draw_rectangle(0.0, 0.0, sw, sh, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.5 });
+            let msg = "Pausado — presiona ESC para continuar";
+            let tw = measure_text(msg, None, 32, 1.0);
+            draw_text(msg, sw/2.0 - tw.width/2.0, sh/2.0, 32.0, WHITE);
+
+            // ---- BOTÓN: Volver al menú también en pausa ----
+            // posición y tamaño del botón (centrado debajo del texto)
+            let btn_w = 220.0;
+            let btn_h = 48.0;
+            let btn_x = sw / 2.0 - btn_w / 2.0;
+            let btn_y = sh / 2.0 + 40.0;
+
+            let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
+
+            // apariencia hover
+            let (mx, my) = mouse_position();
+            if btn_rect.contains(vec2(mx, my)) {
+                draw_rectangle(btn_x - 4.0, btn_y - 4.0, btn_w + 8.0, btn_h + 8.0, GRAY);
+            } else {
+                draw_rectangle(btn_x - 2.0, btn_y - 2.0, btn_w + 4.0, btn_h + 4.0, DARKGRAY);
+            }
+            draw_rectangle(btn_x, btn_y, btn_w, btn_h, DARKBLUE);
+            let label = "Volver al menú";
+            let lt = measure_text(label, None, 28, 1.0);
+            draw_text(label, btn_x + btn_w / 2.0 - lt.width / 2.0, btn_y + btn_h / 2.0 + 10.0, 28.0, WHITE);
+
+            // detectar click y salir del nivel (volver al menú)
+            if is_mouse_button_pressed(MouseButton::Left) {
+                if btn_rect.contains(vec2(mx, my)) {
+                    set_cursor_grab(false);
+                    show_mouse(true);
                     break;
                 }
             }
@@ -469,7 +468,7 @@ fn count_coins() -> i32 {
         let mut c = 0;
         for y in 0..MAP_H {
             for x in 0..MAP_W {
-                if MAP[y][x] == 2 {
+                if MAP[y][x] == 2 || MAP[y][x] == 4 {
                     c += 1;
                 }
             }
@@ -477,6 +476,7 @@ fn count_coins() -> i32 {
         c
     }
 }
+
 
 /// Dibuja paredes texturizadas y devuelve z-buffer (distancia perpendicular por columna).
 /// La celda 3 (salida) se considera muro **solo** cuando quedan monedas (coins > 0).
@@ -623,7 +623,14 @@ fn draw_scene(
 /// Dibuja monedas y la salida en 3D como sprites (texturas), respetando z-buffer.
 /// La salida solo se dibuja como sprite si coins == 0 (después de recoger).
 /// La animación de la salida usa un bob sin() para subir/bajar.
-fn draw_sprites_3d(cam: &Camera, z_buffer: &Vec<f32>, coin_tex: &Texture2D, exit_tex: &Texture2D, coins: i32) {
+fn draw_sprites_3d(
+    cam: &Camera,
+    z_buffer: &Vec<f32>,
+    coin_tex: &Texture2D,   // textura para moneda tipo 2 (burro)
+    gato_tex: &Texture2D,   // textura para moneda tipo 4 (gato)
+    exit_tex: &Texture2D,   // textura para la salida (fiona)
+    coins: i32
+) {
     let sw = screen_width();
     let sh = screen_height();
     let inv_det = 1.0 / (cam.plane.x * cam.dir.y - cam.dir.x * cam.plane.y);
@@ -633,11 +640,14 @@ fn draw_sprites_3d(cam: &Camera, z_buffer: &Vec<f32>, coin_tex: &Texture2D, exit
         for y in 0..MAP_H {
             for x in 0..MAP_W {
                 let cell = MAP[y][x];
+
                 // Si es la salida pero no hemos recogido las monedas -> no dibujar sprite (esa celda se ve como pared)
                 if cell == 3 && coins > 0 {
                     continue;
                 }
-                if cell == 2 || cell == 3 {
+
+                // Dibujar solo si es moneda (2 o 4) o salida (3)
+                if cell == 2 || cell == 3 || cell == 4 {
                     let sprite_x = (x as f32 + 0.5) - cam.pos.x;
                     let sprite_y = (y as f32 + 0.5) - cam.pos.y;
 
@@ -649,7 +659,8 @@ fn draw_sprites_3d(cam: &Camera, z_buffer: &Vec<f32>, coin_tex: &Texture2D, exit
                     let screen_x = (sw / 2.0) * (1.0 + transform_x / transform_y);
 
                     let mut sprite_h = (sh / transform_y).abs();
-                    sprite_h *= if cell == 2 { 0.45 } else { 0.85 };
+                    // escala diferente para monedas vs salida
+                    sprite_h *= if cell == 2 || cell == 4 { 0.45 } else { 0.85 };
                     let sprite_w = sprite_h;
 
                     let draw_start_y = (sh / 2.0) - (sprite_h / 2.0);
@@ -659,16 +670,24 @@ fn draw_sprites_3d(cam: &Camera, z_buffer: &Vec<f32>, coin_tex: &Texture2D, exit
                     if center_column < 0 || (center_column as usize) >= z_buffer.len() { continue; }
                     if transform_y >= z_buffer[center_column as usize] { continue; }
 
-                    // bob vertical - para fiona (salida) y un poco para la moneda también
+                    // bob vertical - para fiona (salida) y un poco para las monedas también
                     let bob = if cell == 3 {
                         // salida: movimiento vertical más pronunciado
                         (t * 2.4).sin() * (sprite_h * 0.08)
                     } else {
-                        // moneda: giro y brillo (como antes)
+                        // monedas: leve bob para dar vida
                         (t * 2.0).sin() * (sprite_h * 0.06)
                     };
                     let dest_y = draw_start_y + bob;
-                    let tex = if cell == 2 { coin_tex } else { exit_tex };
+
+                    // seleccionar textura según tipo de celda:
+                    let tex = if cell == 2 {
+                        coin_tex
+                    } else if cell == 4 {
+                        gato_tex
+                    } else {
+                        exit_tex
+                    };
 
                     let dest_size = Some(vec2(sprite_w, sprite_h));
                     let params = DrawTextureParams {
@@ -681,11 +700,14 @@ fn draw_sprites_3d(cam: &Camera, z_buffer: &Vec<f32>, coin_tex: &Texture2D, exit
                     };
                     draw_texture_ex(tex, draw_start_x, dest_y, WHITE, params);
 
+                    // **Se elimina el brillo/ruedita blanca** que antes aparecía sobre la moneda 2.
+                    // (no hay draw_circle aquí)
                 }
             }
         }
     }
 }
+
 
 fn draw_minimap(cam: &Camera, coins: i32) {
     let ox = 10.0;
@@ -702,7 +724,7 @@ fn draw_minimap(cam: &Camera, coins: i32) {
                     GREEN
                 } else if cell == 3 {
                     if coins > 0 { RED } else { BLACK }
-                } else if cell == 2 {
+                } else if cell == 2 || cell == 4 {
                     YELLOW
                 } else {
                     BLACK
