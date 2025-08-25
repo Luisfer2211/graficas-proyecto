@@ -1,5 +1,6 @@
 use macroquad::prelude::*;
 use macroquad::texture::FilterMode;
+use macroquad::audio::{load_sound, play_sound, stop_sound, PlaySoundParams, Sound};
 use std::time::Duration;
 use std::thread::sleep;
 
@@ -71,9 +72,9 @@ fn make_placeholder_texture(r: u8, g: u8, b: u8) -> Texture2D {
     Texture2D::from_rgba8(2, 2, &bytes)
 }
 
-#[macroquad::main("Raycaster 3D – Macroquad (texturas mejoradas)")]
+#[macroquad::main("Raycaster 3D – Macroquad (texturas y audio)")]
 async fn main() {
-    // Intentar cargar texturas; si falla, creamos placeholder y avisamos.
+    // ---- Texturas ----
     let planicie = match load_texture("img/planicie.png").await {
         Ok(t) => t,
         Err(e) => {
@@ -110,12 +111,46 @@ async fn main() {
         }
     };
 
-    // Usar filtrado LINEAR para suavizar cuando la misma columna se estira verticalmente
     planicie.set_filter(FilterMode::Linear);
     bosque.set_filter(FilterMode::Linear);
     castillo.set_filter(FilterMode::Linear);
     burro.set_filter(FilterMode::Linear);
     fiona.set_filter(FilterMode::Linear);
+
+    // ---- Audios ----
+    // Guardamos las Sound en Option<Sound> (no las movemos fuera; usaremos as_ref() para pasar &Sound).
+    let bg_sound_opt: Option<Sound> = match load_sound("img/fondo.wav").await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Warning: no se pudo cargar img/fondo.wav: {}. Audio de fondo deshabilitado.", e);
+            None
+        }
+    };
+    let coin_sound_opt: Option<Sound> = match load_sound("img/moneda.wav").await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Warning: no se pudo cargar img/moneda.wav: {}. Sonido de moneda deshabilitado.", e);
+            None
+        }
+    };
+    let final_sound_opt: Option<Sound> = match load_sound("img/final.wav").await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("Warning: no se pudo cargar img/final.wav: {}. Sonido final deshabilitado.", e);
+            None
+        }
+    };
+
+    // Flags para controlar reproducción/pausa/estado final
+    let mut bg_playing = false;
+    let mut bg_should_play = true; // cuando final suena lo ponemos en false para evitar reinicios
+    let mut final_played = false;
+
+    // Iniciamos el audio de fondo en bucle (si está disponible)
+    if let Some(bg_ref) = bg_sound_opt.as_ref() {
+        play_sound(bg_ref, PlaySoundParams { looped: true, volume: 0.6 });
+        bg_playing = true;
+    }
 
     // posiciones clave
     let spawn = vec2(1.5, 10.5);
@@ -139,10 +174,26 @@ async fn main() {
         // ====== INPUT ======
         if is_key_pressed(KeyCode::Escape) {
             paused = !paused;
+
+            // Pausamos/Despausamos audio de fondo (simulación: stop/replay)
             if paused {
+                // Pausamos: paramos el sonido de fondo si está sonando
+                if bg_playing {
+                    if let Some(bg_ref) = bg_sound_opt.as_ref() {
+                        stop_sound(bg_ref);
+                    }
+                    bg_playing = false;
+                }
                 set_cursor_grab(false);
                 show_mouse(true);
             } else {
+                // Despausamos: volvemos a iniciar el fondo si corresponde y no hemos llegado al final
+                if bg_should_play && !bg_playing && !final_played {
+                    if let Some(bg_ref) = bg_sound_opt.as_ref() {
+                        play_sound(bg_ref, PlaySoundParams { looped: true, volume: 0.6 });
+                        bg_playing = true;
+                    }
+                }
                 if mouse_look {
                     set_cursor_grab(true);
                     show_mouse(false);
@@ -199,10 +250,34 @@ async fn main() {
             let cy = cam.pos.y as usize;
             if cx < MAP_W && cy < MAP_H {
                 if MAP[cy][cx] == 2 {
+                    // Recolectada
                     MAP[cy][cx] = 0;
                     coins -= 1;
+
+                    // Reproducir sonido de moneda sin detener el fondo (si está disponible)
+                    if let Some(coin_ref) = coin_sound_opt.as_ref() {
+                        play_sound(coin_ref, PlaySoundParams { looped: false, volume: 0.95 });
+                    }
                 }
                 if MAP[cy][cx] == 3 && coins == 0 {
+                    // Jugador gana: paramos sonido de fondo inmediatamente y reproducimos final (una sola vez)
+                    if !final_played {
+                        if let Some(bg_ref) = bg_sound_opt.as_ref() {
+                            // paramos fondo justo antes de reproducir el final
+                            stop_sound(bg_ref);
+                            bg_playing = false;
+                        }
+                        // ya no queremos que el fondo vuelva a iniciarse
+                        bg_should_play = false;
+
+                        // reproducir final
+                        if let Some(final_ref) = final_sound_opt.as_ref() {
+                            play_sound(final_ref, PlaySoundParams { looped: false, volume: 1.0 });
+                        }
+                        final_played = true;
+                    }
+
+                    // marcamos estado de victoria
                     won = true;
                     set_cursor_grab(false);
                     show_mouse(true);
@@ -231,7 +306,7 @@ async fn main() {
         draw_text("Esc para pausar", 10.0, 40.0, 18.0, WHITE);
 
         if !won {
-            let hud = format!("Monedas: {} | FPS: {:.0}", coins, fps);
+            let hud = format!("Amigos por encontrar: {} | FPS: {:.0}", coins, fps);
             draw_text(&hud, 10.0, 20.0, 22.0, YELLOW);
         } else {
             let sw = screen_width();
